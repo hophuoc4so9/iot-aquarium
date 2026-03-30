@@ -1,0 +1,67 @@
+# Ignore Python files
+*.pyc
+__pycache__/
+
+ai-service/model/*.h5
+*.h5
+
+*.h5
+ai-service/model/
+# Ignore Java build files
+/target/
+*.class
+
+# Ignore PlatformIO build files
+/.pio/
+
+# Ignore node modules
+/node_modules/
+
+# Ignore logs
+*.log
+
+# Ignore IDE files
+.vscode/
+.idea/
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore Maven wrapper files
+.mvn/
+.mvnw
+.mvnw.cmd
+
+# Ignore other common files
+.env
+*.bak
+*.swp
+
+# Ignore test output
+/test-output/
+
+# Ignore web build
+/dist/
+/build/
+
+# Ignore backend temp folders
+*.tmp
+
+# Ignore all generated MQTT folders
+!be/
+be/*_paho-tcplocalhost1883/
+
+# Ignore all lab2gialapthietbi Python output
+!be/lab2gialapthietbi/
+be/lab2gialapthietbi/*.pyc
+
+# Ignore all web-admin build output
+!web-admin/
+web-admin/dist/
+web-admin/build/
+
+# Ignore all web-admin node modules
+web-admin/node_modules/
+*.h5
+ai-service/model/
