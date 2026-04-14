@@ -5,24 +5,28 @@
 // MQTT
 #include <WiFiClient.h>
 #include <PubSubClient.h>
+#include "fl_runtime.h"
+#include "telemetry_runtime.h"
+#include "mqtt_runtime.h"
+#include "motor_runtime.h"
 // DS18B20
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
 // ==== CẤU HÌNH =====
 // Float switches: one for HIGH (tank full) and one for LOW (tank minimum)
-#define FLOAT_SWITCH_HIGH_PIN 15  // Chân GPIO cho float switch cao (tank full)
-#define FLOAT_SWITCH_LOW_PIN 16   // Chân GPIO cho float switch thấp (tank low)
+#define FLOAT_SWITCH_HIGH_PIN 16  // Chân GPIO cho float switch cao (tank full)
+#define FLOAT_SWITCH_LOW_PIN 15   // Chân GPIO cho float switch thấp (tank low)
 
 // DS18B20 data pin
 #define ONE_WIRE_BUS 4
 
 // Định danh thiết bị / ao cho payload MQTT và backend
-static const char* DEVICE_ID = "esp32-aquarium-001";
-static const int   POND_ID   = 1;
+static const long DEVICE_ID = 5;
+static const long POND_ID   = 5;
 
-const char* ssid = "TDMU";
-const char* password = "";
+const char* ssid = "HO TUONG VSIP";
+const char* password = "111222333";
 
 // Biến lưu dữ liệu hiện tại
 // (Temperature sensor removed)
@@ -39,14 +43,8 @@ bool floatLowTriggered = false;  // true when LOW float sees water (>= minimum)
 #define LEDC_RES LEDC_TIMER_10_BIT // 10-bit resolution
 #define LEDC_CHANNEL_0 0 // LEDC channel 0
 
-static bool motorRunning = false;
-static unsigned long motorStartMillis = 0;
-const unsigned long MOTOR_MAX_RUN_MS = 20UL * 1000UL; // 60 seconds safety timeout
+const unsigned long MOTOR_MAX_RUN_MS = 60UL * 1000UL; // 60 seconds safety timeout
 static unsigned long reverseEndMillis = 0; // if >0, indicates motor is running backward until this time
-
-// Motor direction tracking
-enum MotorDirection { MOTOR_STOPPED, MOTOR_FORWARD, MOTOR_BACKWARD };
-static MotorDirection currentDirection = MOTOR_STOPPED;
 
 // Mode is controlled via MQTT only (AUTO / MANUAL)
 bool autoMode = false; // true = automatic, false = manual
@@ -100,9 +98,45 @@ const char* topic_telemetry =
 #ifdef MQTT_TOPIC_TELEMETRY
   MQTT_TOPIC_TELEMETRY
 #else
-  "esp32/telemetry"
+  "nckh/iot-aquarium/esp32/telemetry"
 #endif
   ;
+
+static String flTrainStartTopic() {
+  return String("fl/model/") + String(DEVICE_ID) + "/train/start";
+}
+
+static String flModelDownloadTopic() {
+  return String("fl/model/") + String(DEVICE_ID) + "/download";
+}
+
+static String flTrainDoneTopic() {
+  return String("fl/model/") + String(DEVICE_ID) + "/train/done";
+}
+
+static String flMetricsTopic() {
+  return String("fl/metrics/") + String(DEVICE_ID) + "/report";
+}
+
+FlRuntime flRuntime;
+TelemetryRuntime telemetryRuntime;
+MotorRuntime motorRuntime(PWM_GPIO, RPWM_GPIO, LPWM_GPIO, LEDC_CHANNEL_0, LEDC_FREQ, 10);
+
+static String pondCmdTopic() {
+  return String("aquarium/pond/") + String(POND_ID) + "/pump/cmd";
+}
+
+static String pondModeTopic() {
+  return String("aquarium/pond/") + String(POND_ID) + "/pump/mode";
+}
+
+static String pondStatusTopic() {
+  return String("nckh/iot-aquarium/esp32/pond/") + String(POND_ID) + "/status";
+}
+
+static String pondTelemetryTopic() {
+  return String("nckh/iot-aquarium/esp32/pond/") + String(POND_ID) + "/telemetry";
+}
 
 // DS18B20/temperature
 OneWire oneWire(ONE_WIRE_BUS);
@@ -111,83 +145,44 @@ float currentTemperature = NAN;
 bool tempSensorConnected = false;
 const unsigned long TEMP_READ_INTERVAL = 2000;
 
-// ---- pH sensor 
-#define PH_SENSOR_PIN 17
-const unsigned long PH_READ_INTERVAL = 3000; 
-float currentPH = NAN;
-float PH_CALIB_OFFSET = 0.0;
-const float ADC_MAX = 4095.0f;
-const float ADC_REF_VOLTAGE = 3.3f;
-// variable 'no' used for signaling when pH is extreme
-int no = 0;
+void handleFlTrainStart(const String& msg) {
+  if (WiFi.status() != WL_CONNECTED || !mqttClient.connected()) return;
 
-// ---------- Telemetry buffer khi mất mạng ----------
+  String payload = flRuntime.handleTrainStart(msg, DEVICE_ID, POND_ID, millis());
+  if (payload.length() == 0) return;
 
-struct TelemetrySample {
-  float temperature;
-  float ph;
-  bool  floatHigh;
-  bool  floatLow;
-  bool  motorRunning;
-  MotorDirection direction;
-  int   duty;
-  bool  autoMode;
-  unsigned long uptimeMs;
-};
+  String doneTopic = flTrainDoneTopic();
+  String metricsTopic = flMetricsTopic();
+  mqttClient.publish(doneTopic.c_str(), payload.c_str());
+  mqttClient.publish(metricsTopic.c_str(), payload.c_str());
+}
 
-static const int TELEMETRY_BUFFER_SIZE = 20;
-TelemetrySample telemetryBuffer[TELEMETRY_BUFFER_SIZE];
-int telemetryHead = 0;   // next write index
-int telemetryTail = 0;   // next read index
-int telemetryCount = 0;  // number of buffered samples
-
-void enqueueTelemetrySample(const TelemetrySample& s) {
-  telemetryBuffer[telemetryHead] = s;
-  telemetryHead = (telemetryHead + 1) % TELEMETRY_BUFFER_SIZE;
-  if (telemetryCount < TELEMETRY_BUFFER_SIZE) {
-    telemetryCount++;
-  } else {
-    // overwrite oldest
-    telemetryTail = (telemetryTail + 1) % TELEMETRY_BUFFER_SIZE;
+void handleFlModelDownload(const String& msg) {
+  String reason;
+  bool applied = flRuntime.handleModelDownload(msg, reason);
+  if (!applied && reason.length() > 0) {
+    Serial.printf("[FL] %s\n", reason.c_str());
   }
-  Serial.println("[BUFFER] Stored telemetry sample (offline).");
-}
-
-bool hasBufferedTelemetry() {
-  return telemetryCount > 0;
-}
-
-bool dequeueTelemetrySample(TelemetrySample& out) {
-  if (telemetryCount == 0) return false;
-  out = telemetryBuffer[telemetryTail];
-  telemetryTail = (telemetryTail + 1) % TELEMETRY_BUFFER_SIZE;
-  telemetryCount--;
-  return true;
-}
-
-int computeWaterLevelPercent(bool highTriggered, bool lowTriggered) {
-  if (highTriggered && lowTriggered) return 95;   // tank full
-  if (!highTriggered && lowTriggered) return 50;  // normal
-  if (highTriggered && !lowTriggered) return 20;  // impossible hardware state
-  return 15;                                      // very low
+  Serial.printf("[FL] Model update command received. version=%ld payload=%s\n",
+                flRuntime.currentModelVersion(),
+                msg.c_str());
 }
 
 TelemetrySample makeSampleFromCurrent() {
-  TelemetrySample s;
-  s.temperature  = currentTemperature;
-  s.ph           = currentPH;
-  s.floatHigh    = floatHighTriggered;
-  s.floatLow     = floatLowTriggered;
-  s.motorRunning = motorRunning;
-  s.direction    = currentDirection;
-  s.duty         = currentDuty;
-  s.autoMode     = autoMode;
-  s.uptimeMs     = millis();
-  return s;
-}
+  int directionCode = 0;
+  if (motorRuntime.direction() == MOTOR_FORWARD) directionCode = 1;
+  else if (motorRuntime.direction() == MOTOR_BACKWARD) directionCode = 2;
 
-void publishTelemetrySample(const TelemetrySample& s);
-void flushBufferedTelemetry();
+  return telemetryRuntime.makeSample(
+      currentTemperature,
+      floatHighTriggered,
+      floatLowTriggered,
+      motorRuntime.running(),
+      directionCode,
+      currentDuty,
+      autoMode,
+      millis());
+}
 
 
 // Hàm scan OneWire bus để kiểm tra thiết bị
@@ -228,181 +223,87 @@ void pwm_init();
 // Helper to publish a simple JSON status + telemetry
 void publishStatus() {
   TelemetrySample sample = makeSampleFromCurrent();
-
-  // Nếu chưa có WiFi hoặc MQTT, chỉ buffer lại
-  if (WiFi.status() != WL_CONNECTED || !mqttClient.connected()) {
-    enqueueTelemetrySample(sample);
-    return;
-  }
-
-  const char* dirStr = (sample.direction == MOTOR_FORWARD) ? "FORWARD" :
-                       (sample.direction == MOTOR_BACKWARD) ? "BACKWARD" : "STOPPED";
-
-  // Status JSON (không buffer)
-  char buf[512];
-  int len = snprintf(
-      buf,
-      sizeof(buf),
-      "{\"deviceId\":\"%s\",\"mode\":\"%s\",\"motorRunning\":%s,"
-      "\"direction\":\"%s\",\"duty\":%d,\"floatHigh\":%s,\"floatLow\":%s,"
-      "\"uptimeMs\":%lu}",
-      DEVICE_ID,
-      sample.autoMode ? "AUTO" : "MANUAL",
-      sample.motorRunning ? "true" : "false",
-      dirStr,
-      sample.duty,
-      sample.floatHigh ? "true" : "false",
-      sample.floatLow ? "true" : "false",
-      sample.uptimeMs);
-  mqttClient.publish(topic_status, buf, len);
-
-  // Telemetry hiện tại
-  publishTelemetrySample(sample);
-
-  // Gửi bù các bản ghi đã buffer (nếu có)
-  flushBufferedTelemetry();
-}
-
-void publishTelemetrySample(const TelemetrySample& s) {
-  const char* dirStr = (s.direction == MOTOR_FORWARD) ? "FORWARD" :
-                       (s.direction == MOTOR_BACKWARD) ? "BACKWARD" : "STOPPED";
-
-  char temps[32];
-  char phs[32];
-
-  if (isnan(s.temperature)) {
-    strncpy(temps, "null", sizeof(temps));
-  } else {
-    snprintf(temps, sizeof(temps), "%.2f", s.temperature);
-  }
-
-  // Nếu pH cực đoan, random 5–9 cho an toàn giống logic cũ
-  float phToSend = s.ph;
-  if (!isnan(s.ph) && (s.ph <= 2.0f || s.ph >= 12.0f)) {
-    phToSend = (float)random(5, 10);
-    Serial.printf("[PH] Extreme pH detected (%.2f) -> sending random pH=%.1f to MQTT\n", s.ph, phToSend);
-  }
-
-  if (isnan(phToSend)) {
-    strncpy(phs, "null", sizeof(phs));
-  } else {
-    snprintf(phs, sizeof(phs), "%.2f", phToSend);
-  }
-
-  int waterLevelPercent = computeWaterLevelPercent(s.floatHigh, s.floatLow);
-
-  char tbuf[512];
-  int tlen = snprintf(
-      tbuf,
-      sizeof(tbuf),
-      "{\"deviceId\":\"%s\",\"pondId\":%d,"
-      "\"temperature\":%s,\"ph\":%s,"
-      "\"floatHigh\":%s,\"floatLow\":%s,"
-      "\"waterLevelPercent\":%d,"
-      "\"motorRunning\":%s,\"direction\":\"%s\","
-      "\"duty\":%d,\"mode\":\"%s\",\"uptimeMs\":%lu,"
-      "\"source\":\"esp32\"}",
+  telemetryRuntime.publishStatusAndTelemetry(
+      sample,
+      WiFi.status() == WL_CONNECTED,
+      mqttClient.connected(),
+      mqttClient,
       DEVICE_ID,
       POND_ID,
-      temps,
-      phs,
-      s.floatHigh ? "true" : "false",
-      s.floatLow ? "true" : "false",
-      waterLevelPercent,
-      s.motorRunning ? "true" : "false",
-      dirStr,
-      s.duty,
-      s.autoMode ? "AUTO" : "MANUAL",
-      s.uptimeMs);
-
-  mqttClient.publish(topic_telemetry, tbuf, tlen);
-
-  Serial.printf("[TELEMETRY] device=%s, pond=%d, mode=%s, motor=%s, dir=%s, temp=%s, ph=%s\n",
-                DEVICE_ID,
-                POND_ID,
-                s.autoMode ? "AUTO" : "MANUAL",
-                s.motorRunning ? "ON" : "OFF",
-                dirStr,
-                temps,
-                phs);
-}
-
-void flushBufferedTelemetry() {
-  if (WiFi.status() != WL_CONNECTED || !mqttClient.connected()) return;
-
-  TelemetrySample s;
-  while (hasBufferedTelemetry()) {
-    if (!dequeueTelemetrySample(s)) break;
-    publishTelemetrySample(s);
-    delay(50); // tránh flood broker
-  }
+      pondStatusTopic(),
+      pondTelemetryTopic(),
+      flRuntime,
+      0.12f);
 }
 
 // MQTT callback
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   String msg;
   for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
+  msg.trim();
   String t = String(topic);
+  String perPondCmd = pondCmdTopic();
+  String perPondMode = pondModeTopic();
+  String trainStartTopic = flTrainStartTopic();
+  String modelDownloadTopic = flModelDownloadTopic();
 
-  if (t == String(topic_mode)) {
+  if (t == String(topic_mode) || t == perPondMode) {
     if (msg.equalsIgnoreCase("AUTO")) {
       if (!autoMode) {  // Chỉ hiển thị khi trạng thái thay đổi
         Serial.printf("MQTT msg on %s: %s\n", topic, msg.c_str());
         autoMode = true;
-        // Removed publish to avoid loop: mqttClient.publish(topic_mode, "AUTO");
+        publishStatus();
       }
     } else if (msg.equalsIgnoreCase("MANUAL")) {
       if (autoMode) {  // Chỉ hiển thị khi trạng thái thay đổi
         Serial.printf("MQTT msg on %s: %s\n", topic, msg.c_str());
         autoMode = false;
-        // Removed publish to avoid loop: mqttClient.publish(topic_mode, "MANUAL");
+        publishStatus();
       }
     }
-  } else if (t == String(topic_cmd)) {
-    // Manual commands: FORWARD, BACKWARD, STOP, DUTY:<0-1023>
+  } else if (t == String(topic_cmd) || t == perPondCmd) {
+    // Lệnh điều khiển cơ bản: FORWARD, BACKWARD, STOP, DUTY:<0-1023>
     Serial.printf("[MQTT CMD] %s\n", msg.c_str());
-    
+
     if (msg.equalsIgnoreCase("FORWARD")) {
       motor_forward(currentDuty);
-      // Removed publish to avoid loop: mqttClient.publish(topic_cmd, "FORWARD");
     } else if (msg.equalsIgnoreCase("BACKWARD")) {
       motor_backward(currentDuty);
-      // Removed publish to avoid loop: mqttClient.publish(topic_cmd, "BACKWARD");
     } else if (msg.equalsIgnoreCase("STOP")) {
       motor_stop();
-      // Removed publish to avoid loop: mqttClient.publish(topic_cmd, "STOP");
     } else if (msg.startsWith("DUTY:")) {
       int d = msg.substring(5).toInt();
       d = constrain(d, 0, 1023);
       currentDuty = d;
       Serial.printf("[DUTY] Set to %d\n", currentDuty);
-      // Removed publish to avoid loop
-      // if motor running keep direction but update duty
-      if (motorRunning) {
-        ledcWrite(LEDC_CHANNEL_0, currentDuty);
-        publishStatus();
+
+      // Nếu motor đang chạy thì cập nhật duty ngay.
+      if (motorRuntime.running()) {
+        motorRuntime.applyDuty(currentDuty);
       }
+      publishStatus();
+    } else {
+      Serial.printf("[MQTT CMD] Invalid command: %s\n", msg.c_str());
     }
+  } else if (t == trainStartTopic) {
+    handleFlTrainStart(msg);
+  } else if (t == modelDownloadTopic) {
+    handleFlModelDownload(msg);
   }
 }
 
 void mqttReconnect() {
-  while (!mqttClient.connected()) {
-    Serial.print("Attempting MQTT connection...");
-    String clientId = "esp32-aquarium-" + String((uint32_t)ESP.getEfuseMac());
-    if (mqttClient.connect(clientId.c_str())) {
-      Serial.println("connected");
-      mqttClient.subscribe(topic_cmd);
-      mqttClient.subscribe(topic_mode);
-      // publish initial mode
-      mqttClient.publish(topic_mode, autoMode ? "AUTO" : "MANUAL");
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(mqttClient.state());
-      Serial.println(" try again in 2 seconds");
-      delay(2000);
-    }
-  }
+  String clientId = "esp32-aquarium-" + String((uint32_t)ESP.getEfuseMac());
+  mqttEnsureConnected(
+      mqttClient,
+      clientId,
+      topic_cmd,
+      topic_mode,
+      pondCmdTopic(),
+      pondModeTopic(),
+      flTrainStartTopic(),
+      flModelDownloadTopic(),
+      autoMode);
 }
 
 void setupWiFi() {
@@ -473,71 +374,26 @@ Serial.println("\n--- Đọc nhiệt độ DS18B20 ---");
 }
 
 
-void readPH() {
-  static const int samples = 10;
-  long acc = 0;
-  for (int i = 0; i < samples; ++i) {
-    acc += analogRead(PH_SENSOR_PIN);
-    delay(15);
-  }
-  float raw = acc / (float)samples;
-  float voltage = (raw / ADC_MAX) * ADC_REF_VOLTAGE;
-
-  // convert to pH using approximation; apply calibration offset
-  float ph = 7.0f + (2.5f - voltage) / 0.18f + PH_CALIB_OFFSET;
-  // clamp to valid range
-  if (ph < 0.0f) ph = 0.0f;
-  if (ph > 14.0f) ph = 14.0f;
-
-  currentPH = ph;
-  Serial.printf("[PH] raw=%.0f, V=%.3f V, pH=%.2f\n", raw, voltage, currentPH);
-
-  if (currentPH <= 2.0f || currentPH >= 12.0f) {
-    no = random(5, 10);
-    Serial.printf("[PH] PH = (%.2f) -> no=%d (random 5..9)\n", currentPH, no);
-  }
-}
-
 // ---------------- Motor / PWM helpers ----------------
 void pwm_init() {
-  // channel, freq, resolution
-  ledcSetup(LEDC_CHANNEL_0, LEDC_FREQ, 10); // 10-bit resolution
-  ledcAttachPin(PWM_GPIO, LEDC_CHANNEL_0);
-  pinMode(RPWM_GPIO, OUTPUT);
-  pinMode(LPWM_GPIO, OUTPUT);
-  digitalWrite(RPWM_GPIO, LOW);
-  digitalWrite(LPWM_GPIO, LOW);
+  motorRuntime.init();
 }
 
 void motor_forward(uint32_t duty) {
   Serial.printf("[MOTOR] FORWARD duty=%d\n", duty);
-  digitalWrite(RPWM_GPIO, HIGH);
-  digitalWrite(LPWM_GPIO, LOW);
-  ledcWrite(LEDC_CHANNEL_0, duty);
-  motorRunning = true;
-  currentDirection = MOTOR_FORWARD;
-  motorStartMillis = millis();
+  motorRuntime.forward(duty);
   publishStatus(); // Publish immediately
 }
 
 void motor_backward(uint32_t duty) {
   Serial.printf("[MOTOR] BACKWARD duty=%d\n", duty);
-  digitalWrite(RPWM_GPIO, LOW);
-  digitalWrite(LPWM_GPIO, HIGH);
-  ledcWrite(LEDC_CHANNEL_0, duty);
-  motorRunning = true;
-  currentDirection = MOTOR_BACKWARD;
-  motorStartMillis = millis();
+  motorRuntime.backward(duty);
   publishStatus(); // Publish immediately
 }
 
 void motor_stop() {
   Serial.println("[MOTOR] STOP");
-  digitalWrite(RPWM_GPIO, LOW);
-  digitalWrite(LPWM_GPIO, LOW);
-  ledcWrite(LEDC_CHANNEL_0, 0);
-  motorRunning = false;
-  currentDirection = MOTOR_STOPPED;
+  motorRuntime.stop();
   publishStatus(); // Publish immediately
 }
 
@@ -569,6 +425,8 @@ void setup() {
   randomSeed((uint32_t)esp_random());
   Serial.println("\n=== ESP32-S3 Aquarium Monitor with WiFi ===");
 
+  flRuntime.loadFromNvs();
+
   // Cấu hình chân float switches
   Serial.printf("Float HIGH pin: %d\n", FLOAT_SWITCH_HIGH_PIN);
   Serial.printf("Float LOW pin: %d\n", FLOAT_SWITCH_LOW_PIN);
@@ -577,10 +435,6 @@ void setup() {
 
   // Init motor PWM
   pwm_init();
-
-  // Configure pH sensor pin
-  Serial.printf("PH sensor pin: %d\n", PH_SENSOR_PIN);
-  pinMode(PH_SENSOR_PIN, INPUT);
 
   // ===== Khởi động DS18B20 Temperature Sensor =====
   Serial.println("\n=== Khởi động cảm biến nhiệt độ DS18B20 ===");
@@ -644,7 +498,6 @@ void loop() {
   if (millis() - lastRead > TEMP_READ_INTERVAL) {
     readFloatSwitch();     // Đọc trạng thái các float switch
     readTemperature();     // Đọc nhiệt độ từ DS18B20
-    readPH();              // Đọc pH từ probe
     lastRead = millis();
   }
   
@@ -657,7 +510,7 @@ void loop() {
   // Motor control logic (AUTO mode only):
   if (autoMode) {
     // If level below minimum -> start pump forward
-    if (!floatLowTriggered && !motorRunning && reverseEndMillis == 0) {
+    if (!floatLowTriggered && !motorRuntime.running() && reverseEndMillis == 0) {
       Serial.println("[AUTO] Water below minimum: starting pump forward...");
       motor_forward(currentDuty);
     }
@@ -677,7 +530,7 @@ void loop() {
     }
     
     // Safety timeout for AUTO mode
-    if (motorRunning && (millis() - motorStartMillis > MOTOR_MAX_RUN_MS)) {
+    if (motorRuntime.running() && (millis() - motorRuntime.startMillis() > MOTOR_MAX_RUN_MS)) {
       Serial.println("[AUTO] Motor safety timeout reached -> stopping motor");
       motor_stop();
     }
@@ -685,7 +538,7 @@ void loop() {
   
   // MANUAL mode: Only respond to MQTT commands (handled in mqttCallback)
   // Safety timeout for MANUAL mode
-  if (!autoMode && motorRunning && (millis() - motorStartMillis > MOTOR_MAX_RUN_MS)) {
+  if (!autoMode && motorRuntime.running() && (millis() - motorRuntime.startMillis() > MOTOR_MAX_RUN_MS)) {
     Serial.println("[MANUAL] Motor safety timeout reached -> stopping motor");
     motor_stop();
   }
@@ -694,13 +547,6 @@ void loop() {
   if (WiFi.status() == WL_CONNECTED) {
     if (!mqttClient.connected()) mqttReconnect();
     mqttClient.loop();
-    // read temperature periodically
-    static unsigned long lastTempMillis = 0;
-    if (millis() - lastTempMillis > TEMP_READ_INTERVAL) {
-      readTemperature();
-      readPH();
-      lastTempMillis = millis();
-    }
 
     if (millis() - lastStatusPublish > STATUS_PUBLISH_INTERVAL) {
       publishStatus();

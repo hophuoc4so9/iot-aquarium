@@ -4,7 +4,9 @@ import '../services/api_service.dart';
 import '../models/telemetry.dart';
 
 class SensorChart extends StatefulWidget {
-  const SensorChart({super.key});
+  final int? pondId;
+
+  const SensorChart({super.key, this.pondId});
 
   @override
   State<SensorChart> createState() => _SensorChartState();
@@ -27,7 +29,7 @@ class _SensorChartState extends State<SensorChart> {
       _error = null;
     });
     try {
-      final data = await ApiService.fetchRecentTelemetry();
+      final data = await ApiService.fetchRecentTelemetry(pondId: widget.pondId);
       setState(() {
         _history = data.reversed.toList(); // hiển thị theo thời gian tăng dần
         _loading = false;

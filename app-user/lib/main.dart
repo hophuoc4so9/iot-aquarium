@@ -7,6 +7,7 @@ import 'screens/account_screen.dart';
 import 'screens/login_screen.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const SmartAquariumApp());
 }
 

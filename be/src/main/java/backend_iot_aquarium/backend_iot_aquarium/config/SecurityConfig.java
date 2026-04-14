@@ -31,6 +31,7 @@ public class SecurityConfig {
                         .requestMatchers("/ws/**").permitAll()
                         .requestMatchers("/api/telemetry/**").permitAll()
                         .requestMatchers("/api/control/**").permitAll()
+                        .requestMatchers("/api/fl/**").permitAll()
                         .requestMatchers("/api/ai/fish-disease/history", "/api/ai/fish-disease/history/**").authenticated()
                         .requestMatchers("/api/ai/**").permitAll()
                         .requestMatchers("/api/chat/**").permitAll()

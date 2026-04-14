@@ -1,6 +1,8 @@
 # Ignore Python files
 *.pyc
 __pycache__/
+.venv/
+ai-service/.venv/
 
 ai-service/model/*.h5
 *.h5

@@ -56,5 +56,17 @@ public class UserAccountService {
                     return userAccountRepository.save(admin);
                 });
     }
+
+    public UserAccount createUserIfNotExists(String username, String rawPassword, String fullName) {
+        return userAccountRepository.findByUsername(username)
+                .orElseGet(() -> {
+                    UserAccount user = new UserAccount();
+                    user.setUsername(username);
+                    user.setPasswordHash(passwordEncoder.encode(rawPassword));
+                    user.setRole("USER");
+                    user.setFullName(fullName);
+                    return userAccountRepository.save(user);
+                });
+    }
 }
 

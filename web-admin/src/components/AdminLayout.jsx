@@ -22,7 +22,7 @@ const NAV_GROUPS = [
   {
     label: "AI & Báo cáo",
     items: [
-      { key: "ai", label: "Dự báo & Chẩn đoán ảnh", icon: "🤖" },
+      { key: "ai", label: "AI & Báo cáo", icon: "🤖" },
       { key: "diagnosis-log", label: "Nhật ký chẩn đoán", icon: "📚" },
       { key: "chat-history", label: "Lịch sử Chat tư vấn", icon: "💬" },
     ],
@@ -30,6 +30,10 @@ const NAV_GROUPS = [
 ];
 
 export default function AdminLayout({ activeTab, onTabChange, onLogout, currentUser, children }) {
+  const activeLabel =
+    NAV_GROUPS.flatMap((g) => g.items).find((i) => i.key === activeTab)?.label ??
+    (activeTab === "federated-learning" ? "AI & Báo cáo" : "Trang chủ");
+
   return (
     <div className="min-h-screen flex bg-slate-100">
       {/* Sidebar */}
@@ -73,7 +77,7 @@ export default function AdminLayout({ activeTab, onTabChange, onLogout, currentU
           <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="text-xl font-semibold text-slate-800">
-                {NAV_GROUPS.flatMap((g) => g.items).find((i) => i.key === activeTab)?.label ?? "Trang chủ"}
+                {activeLabel}
               </h2>
               <p className="text-sm text-slate-500 mt-0.5">
                 Quản lý toàn bộ ao nuôi, thiết bị IoT, cảnh báo và báo cáo AI

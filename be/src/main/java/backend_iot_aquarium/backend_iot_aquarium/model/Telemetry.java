@@ -13,8 +13,8 @@ public class Telemetry {
 
     private LocalDateTime timestamp;
 
-    // Định danh thiết bị/ao (phục vụ mapping sang bảng device/pond sau này)
-    private String deviceId;
+    // Định danh số thống nhất giữa ESP32 và backend.
+    private Long deviceId;
 
     private Long pondId;
 
@@ -48,8 +48,8 @@ public class Telemetry {
     public void setId(Long id) { this.id = id; }
     public LocalDateTime getTimestamp() { return timestamp; }
     public void setTimestamp(LocalDateTime timestamp) { this.timestamp = timestamp; }
-    public String getDeviceId() { return deviceId; }
-    public void setDeviceId(String deviceId) { this.deviceId = deviceId; }
+    public Long getDeviceId() { return deviceId; }
+    public void setDeviceId(Long deviceId) { this.deviceId = deviceId; }
     public Long getPondId() { return pondId; }
     public void setPondId(Long pondId) { this.pondId = pondId; }
     public Double getTemperature() { return temperature; }

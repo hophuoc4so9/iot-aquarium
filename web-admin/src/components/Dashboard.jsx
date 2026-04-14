@@ -1,9 +1,13 @@
-import React, { useEffect, useState, useRef } from "react";
-// Web-admin chỉ dùng để GIÁM SÁT, không điều khiển từ xa
-import Toast from "./Toast";
-import SockJS from "sockjs-client/dist/sockjs.min.js";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Client } from "@stomp/stompjs";
+import SockJS from "sockjs-client/dist/sockjs.min.js";
+
 import AlertsPanel from "./AlertsPanel";
+import DashboardOverview from "./DashboardOverview";
+import HistoryChart from "./HistoryChart";
+import SensorCard from "./SensorCard";
+import Toast from "./Toast";
+import WaterLevelGauge from "./WaterLevelGauge";
 
 const initial = {
   waterLevel: 50,
@@ -11,109 +15,143 @@ const initial = {
   ph: 7.0,
   floatHigh: false,
   floatLow: false,
+  motorRunning: false,
+  direction: "STOPPED",
+  duty: 0,
+  mode: "MANUAL",
+  anomalyScore: 0,
+  anomalyFlag: false,
+  source: "init",
 };
 
 export default function Dashboard() {
   const [data, setData] = useState(initial);
   const [toast, setToast] = useState("");
   const [alerts, setAlerts] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
+  const [connected, setConnected] = useState(false);
+
+  const stompClientRef = useRef(null);
+  const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
+  const HISTORY_LIMIT = 60;
+
   const [thresholds] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem("aq-thresholds")) || {};
-    } catch (e) {
+    } catch {
       return {};
     }
   });
 
-  const stompClientRef = useRef(null);
-  const [connected, setConnected] = useState(false);
-  const mockIntervalRef = useRef(null);
-  const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
+  const parseBool = (v) => v === true || v === "true" || v === 1 || v === "1";
 
-  // Fetch latest status from backend on mount
-  useEffect(() => {
-    async function fetchLatest() {
-      try {
-        const res = await fetch(`${API_BASE}/api/control/status/latest`);
-        if (res.ok) {
-          const telemetry = await res.json();
-          console.log("Latest telemetry:", telemetry);
-          updateDataFromTelemetry(telemetry);
-        }
-      } catch (e) {
-        console.error("Failed to fetch latest status:", e);
+  const getWaterLevelByFloat = (floatHigh, floatLow) => {
+    if (floatHigh && floatLow) return 95;
+    if (!floatHigh && floatLow) return 50;
+    if (floatHigh && !floatLow) return 20;
+    return 15;
+  };
+
+  const pushHistoryPoint = (next) => {
+    const point = {
+      t: new Date(),
+      temp: Number.isFinite(next.temp) ? next.temp : null,
+      ph: Number.isFinite(next.ph) ? next.ph : null,
+      water: Number.isFinite(next.waterLevel) ? next.waterLevel : null,
+      anomaly: Number.isFinite(next.anomalyScore) ? next.anomalyScore : 0,
+    };
+
+    setHistory((prev) => {
+      const merged = [...prev, point];
+      return merged.slice(-HISTORY_LIMIT);
+    });
+  };
+
+  const updateDataFromTelemetry = (payload) => {
+    if (!payload || typeof payload !== "object") return;
+
+    setData((prev) => {
+      const temp =
+        payload.temperature !== undefined && payload.temperature !== null
+          ? Number(payload.temperature)
+          : prev.temp;
+      const ph =
+        payload.ph !== undefined && payload.ph !== null
+          ? Number(payload.ph)
+          : prev.ph;
+      const floatHigh =
+        payload.floatHigh !== undefined ? parseBool(payload.floatHigh) : prev.floatHigh;
+      const floatLow =
+        payload.floatLow !== undefined ? parseBool(payload.floatLow) : prev.floatLow;
+
+      const next = {
+        ...prev,
+        temp,
+        ph,
+        floatHigh,
+        floatLow,
+        waterLevel:
+          payload.waterLevelPercent !== undefined && payload.waterLevelPercent !== null
+            ? Number(payload.waterLevelPercent)
+            : getWaterLevelByFloat(floatHigh, floatLow),
+        motorRunning:
+          payload.motorRunning !== undefined
+            ? parseBool(payload.motorRunning)
+            : prev.motorRunning,
+        direction: payload.direction || prev.direction,
+        duty:
+          payload.duty !== undefined && payload.duty !== null
+            ? Number(payload.duty)
+            : prev.duty,
+        mode: payload.mode || prev.mode,
+        anomalyScore:
+          payload.anomalyScore !== undefined && payload.anomalyScore !== null
+            ? Number(payload.anomalyScore)
+            : prev.anomalyScore,
+        anomalyFlag:
+          payload.anomalyFlag !== undefined
+            ? parseBool(payload.anomalyFlag)
+            : prev.anomalyFlag,
+        source: payload.source || prev.source,
+      };
+
+      pushHistoryPoint(next);
+      return next;
+    });
+
+    setLastUpdatedAt(new Date());
+  };
+
+  const fetchLatest = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/control/status/latest`);
+      if (res.ok) {
+        const telemetry = await res.json();
+        updateDataFromTelemetry(telemetry);
       }
+    } catch (e) {
+      console.error("Failed to fetch latest status:", e);
     }
+  };
+
+  useEffect(() => {
     fetchLatest();
   }, []);
 
-  function updateDataFromTelemetry(payload) {
-    // Map ESP32 telemetry fields to UI state
-    console.log('[Dashboard] Received telemetry:', payload);
-    const newData = { ...data };
-    
-    if (payload.temperature !== undefined && payload.temperature !== null) {
-      newData.temp = parseFloat(payload.temperature);
-    }
-    
-    if (payload.ph !== undefined && payload.ph !== null) {
-      newData.ph = parseFloat(payload.ph);
-    }
-    
-    if (payload.floatHigh !== undefined) {
-      newData.floatHigh = payload.floatHigh === true || payload.floatHigh === "true";
-      console.log('[Dashboard] floatHigh:', payload.floatHigh, '->', newData.floatHigh);
-    }
-    
-    if (payload.floatLow !== undefined) {
-      newData.floatLow = payload.floatLow === true || payload.floatLow === "true";
-      console.log('[Dashboard] floatLow:', payload.floatLow, '->', newData.floatLow);
-    }
-    
-    // Calculate water level percentage from float switches
-    // Logic: floatXXX = true nghĩa là phao đã nổi (có nước ở mức đó)
-    // floatHigh=true AND floatLow=true  -> Tank FULL (95%) - cả 2 phao đều nổi
-    // floatHigh=false AND floatLow=true -> Normal level (50%) - chỉ phao thấp nổi
-    // floatHigh=true AND floatLow=false -> IMPOSSIBLE (phao cao nổi mà phao thấp chưa nổi???)
-    // floatHigh=false AND floatLow=false -> LOW level (15%) - cả 2 phao đều chưa nổi
-    if (newData.floatHigh && newData.floatLow) {
-      newData.waterLevel = 95;  // Tank full - cả 2 phao đều nổi
-    } else if (!newData.floatHigh && newData.floatLow) {
-      newData.waterLevel = 50;  // Normal level - chỉ phao thấp nổi
-    } else if (newData.floatHigh && !newData.floatLow) {
-      // Impossible case: phao cao nổi nhưng phao thấp chưa nổi
-      // Có thể do lỗi phần cứng hoặc đấu dây sai
-      newData.waterLevel = 20;  
-      console.warn('[Dashboard] ⚠️ IMPOSSIBLE STATE: floatHigh=true but floatLow=false!');
-    } else {
-      newData.waterLevel = 15;  // Low level - cả 2 phao đều chưa nổi (cần châm nước gấp!)
-    }
-    
-    setData(newData);
-  }
-
   useEffect(() => {
-    // Setup STOMP client and connect to backend WebSocket
-    // SockJS requires http:// or https:// URL, NOT ws://
     const wsUrl = `${API_BASE}/ws`;
-    console.log("Connecting to WebSocket:", wsUrl);
-    
     const client = new Client({
       webSocketFactory: () => new SockJS(wsUrl),
-      debug: function (str) {
-        console.log("STOMP:", str);
-      },
-      onConnect: (frame) => {
-        console.log("WebSocket connected!");
+      debug: () => {},
+      onConnect: () => {
         setConnected(true);
-        
         client.subscribe("/topic/stream", (msg) => {
           try {
             const body = JSON.parse(msg.body);
-            console.log("WebSocket message:", body);
-            
             if (body && body.data) {
-              const payload = typeof body.data === "string" ? JSON.parse(body.data) : body.data;
+              const payload =
+                typeof body.data === "string" ? JSON.parse(body.data) : body.data;
               updateDataFromTelemetry(payload);
             }
           } catch (e) {
@@ -126,22 +164,18 @@ export default function Dashboard() {
         setConnected(false);
       },
       onDisconnect: () => {
-        console.log("WebSocket disconnected");
         setConnected(false);
       },
     });
-    
+
     stompClientRef.current = client;
     client.activate();
 
     return () => {
-      if (client) {
-        client.deactivate();
-      }
+      if (client) client.deactivate();
     };
-  }, []);
+  }, [API_BASE]);
 
-  // Threshold checks -> produce alerts
   const TH = {
     waterLow: 20,
     waterHigh: 85,
@@ -151,18 +185,21 @@ export default function Dashboard() {
     phHigh: 8.5,
     ...thresholds,
   };
+
   const waterAlert =
     data.waterLevel <= TH.waterLow
       ? "Water level LOW"
       : data.waterLevel >= TH.waterHigh
       ? "Water level HIGH"
       : "";
+
   const tempAlert =
     data.temp < TH.tempLow
       ? "Temperature too LOW"
       : data.temp > TH.tempHigh
       ? "Temperature too HIGH"
       : "";
+
   const phAlert =
     data.ph < TH.phLow
       ? "pH too LOW (acidic)"
@@ -170,8 +207,12 @@ export default function Dashboard() {
       ? "pH too HIGH (alkaline)"
       : "";
 
+  const anomalyAlert = data.anomalyFlag
+    ? `Anomaly score HIGH (${data.anomalyScore.toFixed(3)})`
+    : "";
+
   useEffect(() => {
-    const messages = [waterAlert, tempAlert, phAlert].filter(Boolean);
+    const messages = [waterAlert, tempAlert, phAlert, anomalyAlert].filter(Boolean);
     if (messages.length > 0) {
       const msg = messages.join(" • ");
       setToast(msg);
@@ -179,30 +220,210 @@ export default function Dashboard() {
         ...a.slice(-49),
         { message: msg, ts: new Date().toLocaleString(), level: "WARN" },
       ]);
+
       const t = setTimeout(() => setToast(""), 6000);
       return () => clearTimeout(t);
     }
-    }, [waterAlert, tempAlert, phAlert]);
+
+    return undefined;
+  }, [waterAlert, tempAlert, phAlert, anomalyAlert]);
+
+  const chartLabels = useMemo(
+    () => history.map((item) => item.t.toLocaleTimeString()),
+    [history]
+  );
+
+  const chartSeries = useMemo(
+    () => [
+      {
+        label: "Temperature (C)",
+        data: history.map((item) => item.temp),
+        color: "#ea580c",
+      },
+      {
+        label: "pH",
+        data: history.map((item) => item.ph),
+        color: "#0d9488",
+      },
+      {
+        label: "Water Level (%)",
+        data: history.map((item) => item.water),
+        color: "#0284c7",
+      },
+    ],
+    [history]
+  );
+
+  const anomalySeries = useMemo(
+    () => [
+      {
+        label: "Anomaly Score",
+        data: history.map((item) => item.anomaly),
+        color: "#7c3aed",
+      },
+    ],
+    [history]
+  );
+
+  const alertCountNow = [waterAlert, tempAlert, phAlert, anomalyAlert].filter(Boolean).length;
 
   return (
     <div className="space-y-6">
-      <div className="rounded-2xl bg-gradient-to-r from-cyan-700 via-teal-700 to-emerald-700 text-white p-6 shadow-lg">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+      <div className="rounded-2xl bg-gradient-to-r from-slate-900 via-cyan-900 to-teal-800 text-white p-6 shadow-lg">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Aquarium Monitoring Dashboard</h1>
-            <p className="text-cyan-50 text-sm mt-1">Theo doi muc nuoc, nhiet do va pH theo thoi gian thuc.</p>
+            <h1 className="text-2xl font-semibold tracking-tight">Admin Dashboard</h1>
+            <p className="text-cyan-50 text-sm mt-1">
+              Giam sat trang thai ao nuoi theo thoi gian thuc, bao gom sensor, ket noi va canh bao bat thuong.
+            </p>
           </div>
-          <div className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-medium ${connected ? "bg-emerald-100/20 text-emerald-50" : "bg-rose-100/20 text-rose-50"}`}>
-            {connected ? "● Da ket noi thiet bi" : "○ Mat ket noi thiet bi"}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={fetchLatest}
+              className="rounded-lg bg-white/15 px-3 py-2 text-sm hover:bg-white/25 transition"
+            >
+              Lam moi du lieu
+            </button>
+            <div
+              className={`inline-flex items-center rounded-full px-3 py-2 text-sm font-medium ${
+                connected
+                  ? "bg-emerald-100/20 text-emerald-50"
+                  : "bg-rose-100/20 text-rose-50"
+              }`}
+            >
+              {connected ? "● Da ket noi thiet bi" : "○ Mat ket noi thiet bi"}
+            </div>
           </div>
         </div>
       </div>
-      <div className="bg-white rounded-xl shadow p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-medium text-slate-800">Canh bao he thong</h2>
-          <span className="text-sm text-slate-500">Last updated: {new Date().toLocaleTimeString()}</span>
+
+      <DashboardOverview
+        totalPonds={1}
+        safeCount={alertCountNow === 0 ? 1 : 0}
+        alertCount={alertCountNow > 0 ? 1 : 0}
+        deviceConnected={connected}
+      />
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <div className="xl:col-span-2 space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <SensorCard
+              title="Temperature"
+              value={Number.isFinite(data.temp) ? data.temp.toFixed(1) : "--"}
+              unit="C"
+              alert={tempAlert}
+              ranges={[
+                { max: TH.tempLow, color: "bg-sky-300", label: "Low" },
+                { max: TH.tempHigh, color: "bg-emerald-400", label: "Normal" },
+                { max: 99, color: "bg-rose-400", label: "High" },
+              ]}
+            />
+            <SensorCard
+              title="pH"
+              value={Number.isFinite(data.ph) ? data.ph.toFixed(2) : "--"}
+              unit=""
+              alert={phAlert}
+              ranges={[
+                { max: TH.phLow, color: "bg-amber-300", label: "Acidic" },
+                { max: TH.phHigh, color: "bg-emerald-400", label: "Safe" },
+                { max: 14, color: "bg-fuchsia-300", label: "Alkaline" },
+              ]}
+            />
+            <SensorCard
+              title="Anomaly"
+              value={
+                Number.isFinite(data.anomalyScore)
+                  ? data.anomalyScore.toFixed(3)
+                  : "0.000"
+              }
+              unit="score"
+              alert={anomalyAlert}
+              ranges={[
+                { max: 0.05, color: "bg-emerald-400", label: "Stable" },
+                { max: 0.12, color: "bg-amber-300", label: "Watch" },
+                { max: 2, color: "bg-rose-400", label: "Critical" },
+              ]}
+            />
+          </div>
+
+          <HistoryChart
+            series={chartSeries}
+            labels={chartLabels}
+            title="Realtime Sensor Trends"
+          />
+          <HistoryChart
+            series={anomalySeries}
+            labels={chartLabels}
+            title="Anomaly Score Trend"
+          />
         </div>
-        <AlertsPanel alerts={alerts} />
+
+        <div className="space-y-6">
+          <div className="bg-white rounded-xl shadow p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-slate-800">Water Level</h2>
+              <span className="text-xs text-slate-500">
+                {lastUpdatedAt ? lastUpdatedAt.toLocaleTimeString() : "--:--:--"}
+              </span>
+            </div>
+            <WaterLevelGauge
+              value={Number.isFinite(data.waterLevel) ? data.waterLevel : 0}
+              floatHigh={data.floatHigh}
+              floatLow={data.floatLow}
+            />
+          </div>
+
+          <div className="bg-white rounded-xl shadow p-5">
+            <h2 className="text-lg font-semibold text-slate-800 mb-4">Device Snapshot</h2>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-slate-500">Mode</span>
+                <span className="font-medium">{data.mode}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Motor</span>
+                <span className={`font-medium ${data.motorRunning ? "text-emerald-600" : "text-slate-600"}`}>
+                  {data.motorRunning ? "Running" : "Stopped"}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Direction</span>
+                <span className="font-medium">{data.direction}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Duty</span>
+                <span className="font-medium">{data.duty}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Source</span>
+                <span className="font-medium">{data.source || "esp32"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Float HIGH</span>
+                <span className="font-medium">{data.floatHigh ? "true" : "false"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Float LOW</span>
+                <span className="font-medium">{data.floatLow ? "true" : "false"}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl shadow p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-semibold text-slate-800">Alerts</h2>
+              <button
+                type="button"
+                onClick={() => setAlerts([])}
+                className="text-xs rounded border border-slate-200 px-2 py-1 hover:bg-slate-50"
+              >
+                Xoa lich su
+              </button>
+            </div>
+            <AlertsPanel alerts={alerts} />
+          </div>
+        </div>
       </div>
 
       <Toast

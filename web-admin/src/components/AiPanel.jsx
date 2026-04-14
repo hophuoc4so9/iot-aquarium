@@ -3,48 +3,27 @@ import { appendDiagnosisLog } from "../lib/storage";
 
 /**
  * AI Panel
- * - Gọi API dự báo (forecast) pH / nhiệt độ.
  * - Upload ảnh cá để kiểm tra dấu hiệu bệnh. Kết quả được ghi vào Nhật ký chẩn đoán.
  */
 export default function AiPanel() {
   const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
 
-  const [forecastMetric, setForecastMetric] = useState("PH");
-  const [horizon, setHorizon] = useState(6);
-  const [forecastLoading, setForecastLoading] = useState(false);
-  const [forecastResult, setForecastResult] = useState(null);
-  const [forecastError, setForecastError] = useState(null);
+  async function parseApiError(res, fallbackMessage) {
+    try {
+      const data = await res.json();
+      if (data?.message) return `${fallbackMessage}: ${data.message}`;
+      if (data?.detail) return `${fallbackMessage}: ${data.detail}`;
+      if (data?.error) return `${fallbackMessage}: ${data.error}`;
+    } catch {
+      // Ignore JSON parse errors and keep fallback.
+    }
+    return `${fallbackMessage} (HTTP ${res.status})`;
+  }
 
   const [file, setFile] = useState(null);
   const [imageLoading, setImageLoading] = useState(false);
   const [imageResult, setImageResult] = useState(null);
   const [imageError, setImageError] = useState(null);
-
-  async function handleForecast() {
-    setForecastLoading(true);
-    setForecastError(null);
-    setForecastResult(null);
-    try {
-      const params = new URLSearchParams({
-        pondId: "1",
-        metric: forecastMetric,
-        horizonHours: String(horizon),
-      });
-      const res = await fetch(`${API_BASE}/api/ai/forecast?${params.toString()}`, {
-        method: "POST",
-      });
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      const data = await res.json();
-      setForecastResult(data);
-    } catch (e) {
-      console.error("Forecast error", e);
-      setForecastError(String(e));
-    } finally {
-      setForecastLoading(false);
-    }
-  }
 
   async function handleImageSubmit(e) {
     e.preventDefault();
@@ -55,12 +34,12 @@ export default function AiPanel() {
     try {
       const formData = new FormData();
       formData.append("file", file);
-      const res = await fetch(`${API_BASE}/api/ai/fish-disease?pondId=1`, {
+      const res = await fetch(`${API_BASE}/api/ai/fish-disease`, {
         method: "POST",
         body: formData,
       });
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
+        throw new Error(await parseApiError(res, "Gọi AI chẩn đoán thất bại"));
       }
       const data = await res.json();
       setImageResult(data);
@@ -79,80 +58,8 @@ export default function AiPanel() {
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      {/* Forecast card */}
-      <div className="bg-white rounded-xl shadow p-6">
-        <h2 className="text-xl font-semibold text-slate-800 mb-2">
-          🔮 Dự báo ngắn hạn
-        </h2>
-        <p className="text-sm text-slate-500 mb-4">
-          Gọi AI service để dự báo pH hoặc nhiệt độ cho ao số 1 trong vài giờ tới.
-        </p>
-
-        <div className="flex flex-col md:flex-row gap-4 mb-4">
-          <div className="flex-1">
-            <label className="block text-xs font-medium text-slate-600 mb-1">
-              Tham số
-            </label>
-            <select
-              value={forecastMetric}
-              onChange={(e) => setForecastMetric(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
-            >
-              <option value="PH">pH</option>
-              <option value="TEMP">Nhiệt độ</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">
-              Horizon (giờ)
-            </label>
-            <select
-              value={horizon}
-              onChange={(e) => setHorizon(Number(e.target.value))}
-              className="px-3 py-2 border border-slate-300 rounded-lg text-sm"
-            >
-              <option value={1}>1</option>
-              <option value={3}>3</option>
-              <option value={6}>6</option>
-            </select>
-          </div>
-        </div>
-
-        <button
-          onClick={handleForecast}
-          disabled={forecastLoading}
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
-        >
-          {forecastLoading ? "Đang gọi AI..." : "Gọi AI forecast"}
-        </button>
-
-        <div className="mt-4">
-          {forecastError && (
-            <div className="text-sm text-red-600">
-              Lỗi gọi forecast: {forecastError}
-            </div>
-          )}
-          {forecastResult && Array.isArray(forecastResult.points) && (
-            <div className="mt-3 text-sm">
-              <div className="font-medium mb-1">Kết quả dự báo:</div>
-              <ul className="space-y-1 max-h-48 overflow-auto text-xs">
-                {forecastResult.points.map((p, idx) => (
-                  <li key={idx} className="flex justify-between border-b border-slate-100 py-1">
-                    <span className="text-slate-500">{p.timestamp}</span>
-                    <span className="font-semibold text-slate-800">
-                      {p.value}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Image classification card */}
-      <div className="bg-white rounded-xl shadow p-6">
+    <div className="grid grid-cols-1 gap-6">
+      <div className="bg-white rounded-xl shadow p-6 border border-slate-100">
         <h2 className="text-xl font-semibold text-slate-800 mb-2">
           🩺 Kiểm tra ảnh cá
         </h2>

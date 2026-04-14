@@ -91,6 +91,15 @@ class _CameraDiagnosisScreenState extends State<CameraDiagnosisScreen> {
     return null;
   }
 
+  String _prettyError(Object error) {
+    final text = error.toString();
+    const prefix = 'Exception: ';
+    if (text.startsWith(prefix)) {
+      return text.substring(prefix.length);
+    }
+    return text;
+  }
+
   Future<void> _pickAndDiagnose(ImageSource source) async {
     final XFile? picked = await _picker.pickImage(
       source: source,
@@ -116,7 +125,7 @@ class _CameraDiagnosisScreenState extends State<CameraDiagnosisScreen> {
       await _loadHistory();
     } catch (e) {
       setState(() {
-        _error = e.toString();
+        _error = _prettyError(e);
       });
     } finally {
       setState(() {

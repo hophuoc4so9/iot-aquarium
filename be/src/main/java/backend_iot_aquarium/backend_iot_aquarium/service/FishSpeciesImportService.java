@@ -55,6 +55,13 @@ public class FishSpeciesImportService {
     private String ecologyViCsvPath;
 
     /**
+     * Path to vn_fish_ecology.csv (ecology/base English rows).
+     * Default: classpath:data/vn_fish_ecology.csv
+     */
+    @Value("${fish.csv.ecology-base:classpath:data/vn_fish_ecology.csv}")
+    private String ecologyBaseCsvPath;
+
+    /**
      * Path to freshwater_aquarium_fish_species.csv (aquarium ranges by common name)
      * Default: classpath:data/freshwater_aquarium_fish_species.csv
      */
@@ -78,6 +85,8 @@ public class FishSpeciesImportService {
     public void importAllFromCsv() throws IOException {
         // Base English info (optional but useful to fill missing EN data)
         importSpeciesBaseInfo();
+        // Ecology/base English remarks
+        importEcologyBase();
         // Vietnamese names + remarks + images
         importSpeciesInfoVi();
         // Ecology (Vietnamese condition description)
@@ -97,11 +106,17 @@ public class FishSpeciesImportService {
                 "Fish species base info (English)");
         storeDatasetFile(speciesInfoCsvPath, "vn_fish_species_info_vi.csv",
                 "Fish species info (Vietnamese names and remarks)");
+        storeDatasetFile(ecologyBaseCsvPath, "vn_fish_ecology.csv",
+            "Fish ecology info (base English rows)");
         storeDatasetFile(ecologyViCsvPath, "vn_fish_ecology_vi.csv",
                 "Fish ecology info (Vietnamese conditions description)");
+        storeDatasetFile(speciesListCsvPath, "vn_fish_species_list.csv",
+            "Fish species list for Vietnam (presence/status)");
         // Lưu thêm file freshwater_aquarium_fish_species.csv để tra cứu lại sau này
         storeDatasetFile(aquariumCsvPath, "freshwater_aquarium_fish_species.csv",
                 "Aquarium fish ranges by common name (temp/pH, images, details)");
+        storeDatasetFile("classpath:data/wiki_fish_names.csv", "wiki_fish_names.csv",
+            "Wiki-derived Vietnamese fish names by scientific taxonomy");
     }
 
     private String normalizeSci(String s) {
@@ -486,6 +501,71 @@ public class FishSpeciesImportService {
             }
         } catch (CsvValidationException e) {
             throw new IOException("Failed to parse ecology Vietnamese CSV file: " + e.getMessage(), e);
+        }
+    }
+
+    @Transactional
+    public void importEcologyBase() throws IOException {
+        Path path = resolvePath(ecologyBaseCsvPath);
+
+        String[] header;
+        try (Reader headerReader = Files.newBufferedReader(path);
+             CSVReader headerCsv = new CSVReaderBuilder(headerReader).build()) {
+            header = headerCsv.readNext();
+        } catch (CsvValidationException e) {
+            throw new IOException("Failed to read header from ecology base CSV file: " + e.getMessage(), e);
+        }
+
+        int addRemsIndex = -1;
+        if (header != null) {
+            for (int i = 0; i < header.length; i++) {
+                String h = header[i] != null ? header[i].trim() : "";
+                if ("AddRems".equalsIgnoreCase(h)) {
+                    addRemsIndex = i;
+                    break;
+                }
+            }
+        }
+
+        try (Reader reader = Files.newBufferedReader(path);
+             CSVReader csvReader = new CSVReaderBuilder(reader)
+                     .withSkipLines(1)
+                     .build()) {
+
+            String[] row;
+            while ((row = csvReader.readNext()) != null) {
+                Integer specCode = parseInt(rowSafe(row, 1)); // SpecCode
+                if (specCode == null) {
+                    continue;
+                }
+
+                String addRems = addRemsIndex >= 0 ? rowSafe(row, addRemsIndex) : null;
+
+                FishSpecies fish = fishSpeciesRepository
+                        .findBySpecCode(specCode)
+                        .orElseGet(FishSpecies::new);
+
+                fish.setSpecCode(specCode);
+
+                if (addRems != null && !addRems.isBlank()) {
+                    String enText = addRems.trim();
+                    if (fish.getRemarksEn() == null || fish.getRemarksEn().isBlank()) {
+                        fish.setRemarksEn(enText);
+                    }
+                    if ((fish.getRemarks() == null || fish.getRemarks().isBlank())
+                            && (fish.getRemarksVi() == null || fish.getRemarksVi().isBlank())) {
+                        fish.setRemarks(enText);
+                    }
+                }
+
+                if (fish.getIsActive() == null) {
+                    fish.setIsActive(true);
+                }
+
+                fishSpeciesRepository.save(fish);
+            }
+        } catch (CsvValidationException e) {
+            throw new IOException("Failed to parse ecology base CSV file: " + e.getMessage(), e);
         }
     }
 

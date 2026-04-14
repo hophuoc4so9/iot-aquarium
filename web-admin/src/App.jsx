@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import AdminLayout from "./layout/AdminLayout";
 import Dashboard from "./pages/dashboard/Dashboard";
 import FishSpeciesManager from "./pages/thresholds/FishSpeciesManager";
-import AiPanel from "./pages/ai/AiPanel";
+import AiReportsPage from "./pages/ai/AiReportsPage";
 import PondsManager from "./pages/ponds/PondsManager";
 import HistoryChartsPage from "./pages/monitoring/HistoryChartsPage";
 import ThresholdConfigPage from "./pages/thresholds/ThresholdConfigPage";
@@ -73,7 +73,8 @@ export default function App() {
       case "thresholds":
         return <FishSpeciesManager />;
       case "ai":
-        return <AiPanel />;
+      case "federated-learning":
+        return <AiReportsPage />;
       case "diagnosis-log":
         return <DiagnosisLog />;
       case "chat-history":

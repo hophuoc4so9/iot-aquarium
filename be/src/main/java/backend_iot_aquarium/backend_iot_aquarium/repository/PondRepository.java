@@ -9,6 +9,8 @@ public interface PondRepository extends JpaRepository<Pond, Long> {
 
     java.util.List<Pond> findByOwnerUsername(String ownerUsername);
 
+    java.util.Optional<Pond> findByDeviceId(Long deviceId);
+
     boolean existsByIdAndOwnerUsername(Long id, String ownerUsername);
 }
 

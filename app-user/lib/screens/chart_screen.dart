@@ -2,14 +2,16 @@ import 'package:flutter/material.dart';
 import '../widgets/sensor_chart.dart';
 
 class ChartScreen extends StatelessWidget {
-  const ChartScreen({super.key});
+  final int? pondId;
+
+  const ChartScreen({super.key, this.pondId});
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
+    return Scaffold(
       body: Padding(
-        padding: EdgeInsets.all(16),
-        child: SensorChart(),
+        padding: const EdgeInsets.all(16),
+        child: SensorChart(pondId: pondId),
       ),
     );
   }

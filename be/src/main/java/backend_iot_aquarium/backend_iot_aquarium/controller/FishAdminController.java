@@ -43,7 +43,7 @@ public class FishAdminController {
             return ResponseEntity.ok(
                     Map.of(
                             "success", true,
-                            "message", "Imported fish species (info EN, info VI, ecology VI) from CSV successfully"
+                        "message", "Imported fish species from all CSV datasets (species EN/VI, ecology EN/VI, species list, aquarium, wiki names) successfully"
                     )
             );
         } catch (IOException e) {
